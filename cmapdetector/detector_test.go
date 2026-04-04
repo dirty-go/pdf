@@ -11,45 +11,6 @@ import (
 	cmapdetect "github.com/dirty-go/pdf/cmapdetector"
 )
 
-// ---- helpers ----------------------------------------------------------------
-
-// makePDF builds a minimal (non-renderable) PDF byte slice that embeds the
-// given CMap name inside a /ToUnicode stream reference, mimicking how a real
-// CJK PDF references its CMap.
-func makePDF(cmapName string) []byte {
-	body := fmt.Sprintf(
-		"%%PDF-1.4\n1 0 obj\n<</Type /Font /Encoding /%s>>\nendobj\n",
-		cmapName,
-	)
-	return []byte(body)
-}
-
-// makePDFFile writes a synthetic PDF to a temp file and returns the path.
-func makePDFFile(t *testing.T, cmapName string) string {
-	t.Helper()
-	f, err := os.CreateTemp(t.TempDir(), "test-*.pdf")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	if _, err := f.Write(makePDF(cmapName)); err != nil {
-		t.Fatal(err)
-	}
-	return f.Name()
-}
-
-// makeCleanPDFFile writes a synthetic PDF with no problematic CMap references.
-func makeCleanPDFFile(t *testing.T) string {
-	t.Helper()
-	f, err := os.CreateTemp(t.TempDir(), "clean-*.pdf")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	f.WriteString("%PDF-1.4\n1 0 obj\n<</Type /Font /Encoding /WinAnsiEncoding>>\nendobj\n")
-	return f.Name()
-}
-
 // ---- Method 1: ScanBytes ----------------------------------------------------
 
 func TestScanBytes_DetectsKnownCMap(t *testing.T) {
@@ -69,7 +30,7 @@ func TestScanBytes_DetectsKnownCMap(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.cmapName, func(t *testing.T) {
-			data := makePDF(tc.cmapName)
+			data := cmapdetect.MakePDF(tc.cmapName)
 			result := cmapdetect.ScanBytes(data)
 
 			if !result.HasProblematicCMap {
@@ -109,7 +70,7 @@ func TestScanBytes_MultipleCMaps(t *testing.T) {
 // ---- Method 1: ScanFile -----------------------------------------------------
 
 func TestScanFile_DetectsCMap(t *testing.T) {
-	path := makePDFFile(t, "UniGB-UTF16-H")
+	path := cmapdetect.MakePDFFile(t, "UniGB-UTF16-H")
 	_, result, err := cmapdetect.ScanFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +107,7 @@ func TestScanFile_MissingFile(t *testing.T) {
 // ---- Method 1: ScanReader ---------------------------------------------------
 
 func TestScanReader_DetectsCMap(t *testing.T) {
-	data := makePDF("UniCNS-UTF16-V")
+	data := cmapdetect.MakePDF("UniCNS-UTF16-V")
 	r := bytes.NewReader(data)
 
 	readData, result, err := cmapdetect.ScanReader(r)
@@ -252,7 +213,7 @@ func TestWrapProcess_MergesWithExistingResult(t *testing.T) {
 // ---- Combined: DetectFile ---------------------------------------------------
 
 func TestDetectFile_Method1Only(t *testing.T) {
-	path := makePDFFile(t, "UniGB-UTF16-H")
+	path := cmapdetect.MakePDFFile(t, "UniGB-UTF16-H")
 	result, err := cmapdetect.DetectFile(path, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -266,7 +227,7 @@ func TestDetectFile_Method1Only(t *testing.T) {
 }
 
 func TestDetectFile_BothMethods(t *testing.T) {
-	path := makePDFFile(t, "UniGB-UTF16-H")
+	path := cmapdetect.MakePDFFile(t, "UniGB-UTF16-H")
 	fn := func(p string) error {
 		return fmt.Errorf("com/itextpdf/io/font/cmap/UniGB-UTF16-H was not found")
 	}
@@ -285,7 +246,7 @@ func TestDetectFile_BothMethods(t *testing.T) {
 }
 
 func TestDetectFile_CleanPDF(t *testing.T) {
-	path := makeCleanPDFFile(t)
+	path := cmapdetect.MakeCleanPDFFile(t)
 	fn := func(p string) error { return nil }
 
 	result, err := cmapdetect.DetectFile(path, fn)
