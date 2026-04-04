@@ -44,28 +44,32 @@ func (m DetectionMethod) String() string {
 	return strings.Join(parts, "+")
 }
 
+func (m *DetectionMethod) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`"%s"`, m)), nil
+}
+
 // Result holds the full outcome of a CMap detection run.
 type Result struct {
 	// FilePath is the path (or original filename for uploads) of the inspected PDF.
-	FilePath string
+	FilePath string `json:"file_path,omitempty"`
 
 	// FileSize is the size in bytes. Set when the source is a multipart upload;
 	// zero when scanning a file by path.
-	FileSize int64
+	FileSize int64 `json:"file_size,omitempty"`
 
 	// HasProblematicCMap is true when at least one detection method flagged the file.
-	HasProblematicCMap bool
+	HasProblematicCMap bool `json:"has_problematic_cmap"`
 
 	// FoundCMaps lists every CMap name discovered in the raw byte scan.
 	// Empty when MethodBytesScan did not trigger.
-	FoundCMaps []string
+	FoundCMaps []string `json:"found_cmaps,omitempty"`
 
 	// DetectedBy is a bitmask of which methods triggered.
-	DetectedBy DetectionMethod
+	DetectedBy DetectionMethod `json:"detected_by,omitempty"`
 
 	// RuntimeErr is the error (or recovered panic) captured by Method 2.
 	// Nil when Method 2 did not trigger.
-	RuntimeErr error
+	RuntimeErr error `json:"runtime_err,omitempty"`
 }
 
 // Error implements the error interface so a Result can be returned as an error.
