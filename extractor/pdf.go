@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,6 +24,40 @@ type XRefEntry struct {
 type PDF struct {
 	Data []byte
 	XRef map[int]XRefEntry
+}
+
+func NewPDFFromFile(pdfFile string) *PDF {
+	f, err := os.Open(pdfFile)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	data, _, err := NewReader(f)
+	if err != nil {
+		return nil
+	}
+
+	return NewPDF(data)
+}
+
+// NewReader initiate new reader from io.reader to byte data
+func NewReader(r io.Reader) ([]byte, int, error) {
+	var buff bytes.Buffer
+	stream := io.TeeReader(r, &buff)
+	buf := make([]byte, 1*1024*1024)
+	dataSize := 0
+	for {
+		n, err := stream.Read(buf)
+		dataSize += n
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, 0, err // propagate instead of panic
+		}
+	}
+
+	return buff.Bytes(), dataSize, nil
 }
 
 func NewPDF(data []byte) *PDF {
