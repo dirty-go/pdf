@@ -90,9 +90,10 @@ var knownProblematicCMaps = []string{
 	"KSCms-UHC-HW-V",
 	"KSCpc-EUC-H",
 
-	// --- Adobe identity CMaps (CIDFont) ---
-	"Identity-H",
-	"Identity-V",
+	// Identity-H and Identity-V are excluded: they are ISO 32000-1 mandatory
+	// predefined CMaps supported by all compliant PDF libraries without additional
+	// CJK font packs. Including them causes false positives on most PDFs with
+	// embedded modern (OTF/TTF CIDFont) fonts.
 }
 
 // errorSignatures are substrings found in error messages or panic values
@@ -100,7 +101,6 @@ var knownProblematicCMaps = []string{
 var errorSignatures = []string{
 	// iTextPDF / iText7 (Java, called via subprocess or JNI)
 	"com/itextpdf/io/font/cmap",
-	"was not found",
 	"CMap",
 
 	// pdfbox

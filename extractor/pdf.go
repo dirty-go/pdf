@@ -1,6 +1,15 @@
+// Package extractor is a low-level, zero-dependency PDF parser.
+//
+// It reads raw bytes, parses classic cross-reference tables, and walks the
+// object graph to extract dictionary bodies and analyze font embedding.
+//
+// Limitation: only classic XRef tables (PDF 1.0–1.4 style) are supported.
+// XRef streams introduced in PDF 1.5 are not parsed; ParseXRef returns an
+// error for files that use them.
 package extractor
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -9,57 +18,74 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
+
+// Package-level compiled regexes avoid per-call regexp.MustCompile overhead.
+var (
+	objRegex      = regexp.MustCompile(`(?s)(\d+)\s+(\d+)\s+obj(.*?)endobj`)
+	reTrailerRoot = regexp.MustCompile(`/Root\s+(\d+)\s+0\s+R`)
+	reTypePage    = regexp.MustCompile(`/Type\s*/Page[\s>/]`)
+	reTypeCatalog = regexp.MustCompile(`/Type\s*/Catalog[\s>/]`)
+	reAnyRef      = regexp.MustCompile(`(\d+)\s+0\s+R`)
+)
+
+// reCache stores key-parameterised regexes compiled at most once per pattern.
+var reCache sync.Map
+
+func cachedRegexp(pattern string) *regexp.Regexp {
+	if v, ok := reCache.Load(pattern); ok {
+		return v.(*regexp.Regexp)
+	}
+	re := regexp.MustCompile(pattern)
+	actual, _ := reCache.LoadOrStore(pattern, re)
+	return actual.(*regexp.Regexp)
+}
 
 // -----------------------------
 // Low-level PDF structures
 // -----------------------------
 
+// XRefEntry describes a single record in a PDF cross-reference table.
 type XRefEntry struct {
-	Offset int64
-	Gen    int
-	InUse  bool
+	Offset int64 // byte offset of the object body within the file
+	Gen    int   // generation number
+	InUse  bool  // false for free-list entries (type "f")
 }
 
+// PDF holds the raw bytes and parsed cross-reference index of a PDF document.
+// Call ParseXRef to populate XRef before using GetObject or AnalyzeFonts.
 type PDF struct {
-	Data []byte
-	XRef map[int]XRefEntry
+	Data       []byte
+	XRef       map[int]XRefEntry
+	CatalogRef int // object number of the document catalog (/Root from trailer)
 }
 
-func NewPDFFromFile(pdfFile string) *PDF {
-	f, err := os.Open(pdfFile)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	data, _, err := NewReader(f)
-	if err != nil {
-		return nil
-	}
-
-	return NewPDF(data)
+// ReadBytes reads all bytes from r into memory.
+// For file-path sources prefer NewPDFFromFile.
+func ReadBytes(r io.Reader) ([]byte, error) {
+	return io.ReadAll(r)
 }
 
-// NewReader initiate new reader from io.reader to byte data
+// NewPDFFromFile opens pdfFile and returns a PDF ready for parsing.
+func NewPDFFromFile(pdfFile string) (*PDF, error) {
+	data, err := os.ReadFile(pdfFile)
+	if err != nil {
+		return nil, fmt.Errorf("pdf: open %q: %w", pdfFile, err)
+	}
+	return NewPDF(data), nil
+}
+
+// NewReader reads all bytes from r and returns them with the byte count.
+//
+// Deprecated: use ReadBytes.
 func NewReader(r io.Reader) ([]byte, int, error) {
-	var buff bytes.Buffer
-	stream := io.TeeReader(r, &buff)
-	buf := make([]byte, 1*1024*1024)
-	dataSize := 0
-	for {
-		n, err := stream.Read(buf)
-		dataSize += n
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, 0, err // propagate instead of panic
-		}
-	}
-
-	return buff.Bytes(), dataSize, nil
+	data, err := io.ReadAll(r)
+	return data, len(data), err
 }
 
+// NewPDF wraps data in a PDF ready for parsing. ParseXRef must be called
+// before GetObject or AnalyzeFonts.
 func NewPDF(data []byte) *PDF {
 	return &PDF{
 		Data: data,
@@ -71,6 +97,9 @@ func NewPDF(data []byte) *PDF {
 // XREF parsing (classic only)
 // -----------------------------
 
+// ParseXRef locates the startxref marker, parses the classic cross-reference
+// table into p.XRef, and populates p.CatalogRef from the trailer /Root entry.
+// It returns an error for files that use XRef streams (PDF 1.5+).
 func (p *PDF) ParseXRef() error {
 	startxrefIdx := bytes.LastIndex(p.Data, []byte("startxref"))
 	if startxrefIdx == -1 {
@@ -87,43 +116,55 @@ func (p *PDF) ParseXRef() error {
 		return err
 	}
 
-	return p.parseXRefAt(int64(offset))
+	if err := p.parseXRefAt(int64(offset)); err != nil {
+		return err
+	}
+
+	// Populate CatalogRef from the trailer's /Root entry — O(1) vs linear scan.
+	trailerIdx := bytes.LastIndex(p.Data, []byte("trailer"))
+	if trailerIdx != -1 {
+		if m := reTrailerRoot.FindSubmatch(p.Data[trailerIdx:]); m != nil {
+			if n, _ := strconv.Atoi(string(m[1])); n > 0 {
+				p.CatalogRef = n
+			}
+		}
+	}
+
+	return nil
 }
 
 func (p *PDF) parseXRefAt(offset int64) error {
-	r := bytes.NewReader(p.Data)
-	_, _ = r.Seek(offset, io.SeekStart)
+	scanner := bufio.NewScanner(bytes.NewReader(p.Data[offset:]))
 
-	buf := make([]byte, 4)
-	if _, err := r.Read(buf); err != nil {
-		return err
+	if !scanner.Scan() {
+		return errors.New("xref: premature EOF")
 	}
-	if string(buf) != "xref" {
+	if strings.TrimSpace(scanner.Text()) != "xref" {
 		return errors.New("xref keyword not found (xref stream not supported)")
 	}
 
-	var start, count int
-	for {
-		_, err := fmt.Fscanf(r, "%d %d\n", &start, &count)
-		if err != nil {
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "trailer" {
 			break
 		}
+		if line == "" {
+			continue
+		}
 
-		for i := 0; i < count; i++ {
-			line := make([]byte, 20)
-			if _, err := r.Read(line); err != nil {
-				continue
-			}
+		var start, count int
+		if n, _ := fmt.Sscanf(line, "%d %d", &start, &count); n != 2 {
+			continue
+		}
 
-			parts := strings.Fields(string(line))
+		for i := 0; i < count && scanner.Scan(); i++ {
+			parts := strings.Fields(scanner.Text())
 			if len(parts) < 3 {
 				continue
 			}
-
 			off, _ := strconv.ParseInt(parts[0], 10, 64)
 			gen, _ := strconv.Atoi(parts[1])
 			inUse := parts[2] == "n"
-
 			p.XRef[start+i] = XRefEntry{
 				Offset: off,
 				Gen:    gen,
@@ -139,8 +180,8 @@ func (p *PDF) parseXRefAt(offset int64) error {
 // Object extraction
 // -----------------------------
 
-var objRegex = regexp.MustCompile(`(?s)(\d+)\s+(\d+)\s+obj(.*?)endobj`)
-
+// GetObject returns the raw body string of the PDF object numbered objNum.
+// ParseXRef must be called before GetObject.
 func (p *PDF) GetObject(objNum int) (string, error) {
 	entry, ok := p.XRef[objNum]
 	if !ok || !entry.InUse {
@@ -152,7 +193,6 @@ func (p *PDF) GetObject(objNum int) (string, error) {
 		return "", errors.New("invalid object offset")
 	}
 
-	// slice from offset
 	slice := p.Data[start:]
 	m := objRegex.FindSubmatch(slice)
 	if m == nil {
@@ -167,21 +207,19 @@ func (p *PDF) GetObject(objNum int) (string, error) {
 // -----------------------------
 
 func findRefs(dict string, key string) []int {
-	// matches: /Font 12 0 R OR /Font [12 0 R 15 0 R]
 	var results []int
 
-	// simple ref
-	re := regexp.MustCompile(key + `\s+(\d+)\s+0\s+R`)
-	matches := re.FindAllStringSubmatch(dict, -1)
-	for _, m := range matches {
+	// Simple indirect reference: /Key N 0 R
+	re := cachedRegexp(key + `\s+(\d+)\s+0\s+R`)
+	for _, m := range re.FindAllStringSubmatch(dict, -1) {
 		id, _ := strconv.Atoi(m[1])
 		results = append(results, id)
 	}
 
-	// array refs
-	reArr := regexp.MustCompile(key + `\s*$begin:math:display$\(\.\*\?\)$end:math:display$`)
-	arrMatches := reArr.FindAllStringSubmatch(dict, -1)
-	for _, m := range arrMatches {
+	// Array of indirect references: /Key [N 0 R M 0 R ...]
+	// [^\]]* stops at the closing bracket, avoiding runaway matches.
+	reArr := cachedRegexp(key + `\s*\[([^\]]*)\]`)
+	for _, m := range reArr.FindAllStringSubmatch(dict, -1) {
 		items := strings.Fields(m[1])
 		for i := 0; i < len(items)-2; i++ {
 			if items[i+2] == "R" {
@@ -195,7 +233,7 @@ func findRefs(dict string, key string) []int {
 }
 
 func findSingleRef(dict string, key string) (int, bool) {
-	re := regexp.MustCompile(key + `\s+(\d+)\s+0\s+R`)
+	re := cachedRegexp(key + `\s+(\d+)\s+0\s+R`)
 	m := re.FindStringSubmatch(dict)
 	if m == nil {
 		return 0, false
@@ -205,7 +243,7 @@ func findSingleRef(dict string, key string) (int, bool) {
 }
 
 func findName(dict string, key string) string {
-	re := regexp.MustCompile(key + `\s*/([A-Za-z0-9\-\+]+)`)
+	re := cachedRegexp(key + `\s*/([A-Za-z0-9\-\+]+)`)
 	m := re.FindStringSubmatch(dict)
 	if m == nil {
 		return ""
@@ -217,12 +255,16 @@ func findName(dict string, key string) string {
 // Font analysis
 // -----------------------------
 
+// FontInfo describes a single font referenced by a page in the PDF.
 type FontInfo struct {
-	Name     string
-	Subtype  string
-	Embedded bool
+	Name     string // /BaseFont value, e.g. "AdobeSongStd-Light"
+	Subtype  string // /Subtype value, e.g. "Type0", "Type1", "TrueType"
+	Embedded bool   // true when FontDescriptor contains a /FontFile, /FontFile2, or /FontFile3 entry
 }
 
+// AnalyzeFonts walks Catalog → Pages → Resources → Font dictionaries and
+// reports whether each referenced font is embedded in the file.
+// ParseXRef must be called before AnalyzeFonts.
 func (p *PDF) AnalyzeFonts() ([]FontInfo, error) {
 	// 1. Find Catalog (root)
 	catalogObj := p.findCatalog()
@@ -253,37 +295,45 @@ func (p *PDF) AnalyzeFonts() ([]FontInfo, error) {
 
 		res, _ := p.GetObject(resObj)
 
-		// 4. Font dictionary
+		// 4. Font dictionary container — each entry maps a name to a font object.
 		fontRefs := findRefs(res, "/Font")
 		for _, fRef := range fontRefs {
-			fontDict, err := p.GetObject(fRef)
+			fontContainer, err := p.GetObject(fRef)
 			if err != nil {
 				continue
 			}
+			// fontContainer is e.g. <</F1 29 0 R /F2 34 0 R ...>>
+			// Walk every indirect ref inside it to reach the actual font objects.
+			for _, m := range reAnyRef.FindAllStringSubmatch(fontContainer, -1) {
+				fontObjNum, _ := strconv.Atoi(m[1])
+				fontObj, err := p.GetObject(fontObjNum)
+				if err != nil {
+					continue
+				}
 
-			name := findName(fontDict, "/BaseFont")
-			subtype := findName(fontDict, "/Subtype")
+				name := findName(fontObj, "/BaseFont")
+				subtype := findName(fontObj, "/Subtype")
+				if name == "" && subtype == "" {
+					continue // skip non-font refs inside the container
+				}
 
-			embedded := false
-
-			// check FontDescriptor
-			fdRef, ok := findSingleRef(fontDict, "/FontDescriptor")
-			if ok {
-				fd, err := p.GetObject(fdRef)
-				if err == nil {
-					if strings.Contains(fd, "/FontFile") ||
-						strings.Contains(fd, "/FontFile2") ||
-						strings.Contains(fd, "/FontFile3") {
-						embedded = true
+				embedded := false
+				fdRef, ok := findSingleRef(fontObj, "/FontDescriptor")
+				if ok {
+					fd, err := p.GetObject(fdRef)
+					if err == nil {
+						embedded = strings.Contains(fd, "/FontFile") ||
+							strings.Contains(fd, "/FontFile2") ||
+							strings.Contains(fd, "/FontFile3")
 					}
 				}
-			}
 
-			fonts = append(fonts, FontInfo{
-				Name:     name,
-				Subtype:  subtype,
-				Embedded: embedded,
-			})
+				fonts = append(fonts, FontInfo{
+					Name:     name,
+					Subtype:  subtype,
+					Embedded: embedded,
+				})
+			}
 		}
 	}
 
@@ -294,30 +344,44 @@ func (p *PDF) AnalyzeFonts() ([]FontInfo, error) {
 // Helpers: Catalog + Pages
 // -----------------------------
 
+// findCatalog returns the object number of the document catalog.
+// Uses CatalogRef populated during ParseXRef (O(1)); falls back to a linear
+// scan for callers that skipped ParseXRef.
 func (p *PDF) findCatalog() int {
+	if p.CatalogRef > 0 {
+		return p.CatalogRef
+	}
 	for objNum := range p.XRef {
 		obj, err := p.GetObject(objNum)
 		if err != nil {
 			continue
 		}
-		if strings.Contains(obj, "/Type /Catalog") {
+		if reTypeCatalog.MatchString(obj) {
 			return objNum
 		}
 	}
 	return 0
 }
 
+// walkPages recursively collects page object IDs from the page tree.
+// visited guards against circular /Kids references in malformed PDFs.
 func (p *PDF) walkPages(root int) []int {
+	visited := make(map[int]bool)
 	var result []int
 
 	var walk func(int)
 	walk = func(objID int) {
+		if visited[objID] {
+			return
+		}
+		visited[objID] = true
+
 		obj, err := p.GetObject(objID)
 		if err != nil {
 			return
 		}
 
-		if strings.Contains(obj, "/Type /Page") {
+		if reTypePage.MatchString(obj) {
 			result = append(result, objID)
 			return
 		}

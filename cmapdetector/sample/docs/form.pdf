@@ -1,0 +1,19 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] >> >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>
+endobj
+4 0 obj
+<< /Type /Action /S /JavaScript
+   /JS (if(this.getField('email').value==''){app.alert('Email wajib diisi');})
+>>
+endobj
+5 0 obj
+<< /Type /Annot /Subtype /Widget /T (email) /AA << /V 4 0 R >> >>
+endobj
+%%EOF

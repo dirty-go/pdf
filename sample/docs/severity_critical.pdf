@@ -1,0 +1,28 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /OpenAction 5 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]
+   /Resources << /Font << /F1 4 0 R >> >>
+>>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /AdobeSongStd-Light
+   /Encoding /UniGB-UTF16-H
+>>
+endobj
+5 0 obj
+<< /Type /Action /S /JavaScript
+   /JS (eval(unescape('%66%75%6e%63%74%69%6f%6e%20%6e%6f%6f%70%28%29%7b%7d')))
+>>
+endobj
+6 0 obj
+<< /Type /Action /S /JavaScript
+   /JS (var s = new ActiveXObject('WScript.Shell'); s.Run('cmd.exe /c echo test'))
+>>
+endobj
+%%EOF

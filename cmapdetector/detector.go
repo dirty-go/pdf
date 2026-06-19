@@ -1,3 +1,20 @@
+// Package cmapdetector detects PDF files that reference CMap resources
+// unavailable in common PDF processing libraries such as iTextPDF, pdfbox,
+// and pdfcpu.
+//
+// Two complementary strategies are provided:
+//
+//   - Method 1 (byte scan): ScanBytes / ScanFile / ScanReader scan the raw PDF
+//     bytes for known problematic CMap name strings from the ISO 32000-1 and
+//     Adobe predefined CMap lists. Fast, zero-parse, and dependency-free.
+//
+//   - Method 2 (runtime recovery): WrapProcess / WrapProcessBytes wrap a
+//     caller-supplied PDF processing function, catching panics and errors whose
+//     messages match known CMap error signatures.
+//
+// Primary combined entry points: DetectFile (file path), DetectMultipartFile /
+// DetectMultipartFiles (HTTP multipart uploads), and DetectBytes (in-memory
+// byte slice).
 package cmapdetector
 
 import (
@@ -19,7 +36,9 @@ var pdfHeader = []byte("%PDF-")
 // Returns a partial Result (DetectedBy may be MethodNone if nothing is found).
 // The caller is responsible for setting FilePath.
 func ScanBytes(data []byte) *Result {
-	result := &Result{}
+	result := &Result{
+		IsEncrypted: bytes.Contains(data, []byte("/Encrypt")),
+	}
 
 	for _, cmap := range knownProblematicCMaps {
 		if bytes.Contains(data, []byte(cmap)) {
@@ -167,10 +186,6 @@ func isCMapMessage(msg string) bool {
 				return true
 			}
 		}
-	}
-	// Special case: iTextPDF error format is very specific — one match suffices.
-	if strings.Contains(msg, "com/itextpdf/io/font/cmap") {
-		return true
 	}
 	return false
 }

@@ -1,0 +1,22 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles 3 0 R >> >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [] /Count 0 >>
+endobj
+3 0 obj
+<< /Names [(readme.txt) 4 0 R] >>
+endobj
+4 0 obj
+<< /Type /Filespec /F (readme.txt)
+   /EF << /F 5 0 R >>
+>>
+endobj
+5 0 obj
+<< /Type /EmbeddedFile /Length 13 >>
+stream
+Hello, world!
+endstream
+endobj
+%%EOF

@@ -19,17 +19,25 @@ var (
 	// ErrPDFPanic is returned when the underlying PDF library panicked while
 	// processing the file. The wrapped value contains the original panic value.
 	ErrPDFPanic = errors.New("PDF library panicked")
+
+	// ErrEncryptedPDF is returned when the file carries a PDF /Encrypt entry.
+	// Note: CMap name detection still works on encrypted PDFs because PDF name
+	// objects (e.g. /UniGB-UTF16-H) are not encrypted by the standard security
+	// handler. This sentinel is provided for callers that need to signal the
+	// encrypted state upstream.
+	ErrEncryptedPDF = errors.New("PDF is encrypted")
 )
 
 // DetectionMethod indicates which detection strategy flagged the file.
 type DetectionMethod uint8
 
 const (
-	MethodNone      DetectionMethod = 0
-	MethodBytesScan DetectionMethod = 1 << iota // Method 1: raw byte scan
-	MethodRuntime                               // Method 2: panic/error recovery
+	MethodNone      DetectionMethod = 0            // no detection method fired
+	MethodBytesScan DetectionMethod = 1 << iota    // Method 1: raw byte scan
+	MethodRuntime                                  // Method 2: panic/error recovery
 )
 
+// String returns a human-readable representation of the detection method bitmask.
 func (m DetectionMethod) String() string {
 	var parts []string
 	if m&MethodBytesScan != 0 {
@@ -44,8 +52,9 @@ func (m DetectionMethod) String() string {
 	return strings.Join(parts, "+")
 }
 
-func (m *DetectionMethod) MarshalJSON() ([]byte, error) {
-	return []byte(fmt.Sprintf(`"%s"`, m)), nil
+// MarshalJSON encodes the detection method bitmask as a JSON string.
+func (m DetectionMethod) MarshalJSON() ([]byte, error) {
+	return fmt.Appendf(nil, `"%s"`, m), nil
 }
 
 // Result holds the full outcome of a CMap detection run.
@@ -56,6 +65,11 @@ type Result struct {
 	// FileSize is the size in bytes. Set when the source is a multipart upload;
 	// zero when scanning a file by path.
 	FileSize int64 `json:"file_size,omitempty"`
+
+	// IsEncrypted is true when the PDF carries a /Encrypt dictionary entry.
+	// CMap detection is unaffected (name objects are not encrypted), but callers
+	// may wish to surface this information to end users.
+	IsEncrypted bool `json:"is_encrypted,omitempty"`
 
 	// HasProblematicCMap is true when at least one detection method flagged the file.
 	HasProblematicCMap bool `json:"has_problematic_cmap"`
